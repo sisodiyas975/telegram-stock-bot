@@ -1,19 +1,21 @@
-from flask import Flask, request
-import re
+from flask import Flask, request, render_template_string
 import sqlite3
 import requests
 import os
+import re
+import pandas as pd
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
+# ================= CONFIG ================= #
+TELEGRAM_TOKEN = "8773521279:AAHHDihdyGKG9Lcn0x2Oxr31zxQqgfiHlAI"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-ALLOWED_CHATS = [6929050061]
-
+ALLOWED_CHATS = [6929050061, 8773521279]   # your chat id
 DB_NAME = "stock.db"
+LOW_STOCK_LIMIT = 100
 
 # DEFAULT STOCK
-HDPE_STOCK = {
+DEFAULT_STOCK = {
     "1.0 inch 8 KG": 1285,
     "1.0 inch 10 KG": 666,
     "1.0 inch 12.5 KG": 863,
@@ -21,15 +23,15 @@ HDPE_STOCK = {
     "1.0 inch PE 100 8KG": 180,
 }
 
-# ---------------- DB ---------------- #
+# ================= DATABASE ================= #
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS hdpe_stock 
-                 (item_code TEXT PRIMARY KEY, meters REAL)''')
 
-    # Insert default stock if not exists
-    for item, qty in HDPE_STOCK.items():
+    c.execute("""CREATE TABLE IF NOT EXISTS hdpe_stock 
+                 (item_code TEXT PRIMARY KEY, meters REAL)""")
+
+    for item, qty in DEFAULT_STOCK.items():
         c.execute("INSERT OR IGNORE INTO hdpe_stock VALUES (?, ?)", (item, qty))
 
     conn.commit()
@@ -40,121 +42,183 @@ def get_stock():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT item_code, meters FROM hdpe_stock")
-    stock = dict(c.fetchall())
+    data = dict(c.fetchall())
     conn.close()
-    return stock
+    return data
 
 
-def deduct_stock(item_code, meters):
+def update_stock(item, qty):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    c.execute("SELECT meters FROM hdpe_stock WHERE item_code=?", (item_code,))
+    c.execute("SELECT meters FROM hdpe_stock WHERE item_code=?", (item,))
+    row = c.fetchone()
+
+    if row:
+        new_qty = row[0] + qty
+        c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_qty, item))
+    else:
+        new_qty = qty
+        c.execute("INSERT INTO hdpe_stock VALUES (?, ?)", (item, qty))
+
+    conn.commit()
+    conn.close()
+    return new_qty
+
+
+def deduct_stock(item, qty):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+
+    c.execute("SELECT meters FROM hdpe_stock WHERE item_code=?", (item,))
     row = c.fetchone()
 
     if not row:
-        conn.close()
         return None
 
-    current = row[0]
-    new_stock = max(0, current - meters)
+    new_qty = max(0, row[0] - qty)
+    c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_qty, item))
 
-    c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_stock, item_code))
     conn.commit()
     conn.close()
+    return new_qty
 
-    return new_stock
 
-
-# ---------------- TELEGRAM ---------------- #
+# ================= TELEGRAM ================= #
 def send_message(chat_id, text):
-    url = f"{TELEGRAM_API_URL}/sendMessage"
-    res = requests.post(url, json={
+    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
     })
-    print(res.text)  # DEBUG
 
 
-# ---------------- ROUTE ---------------- #
-@app.route("/telegram", methods=['POST'])
-def webhook():
+def send_file(chat_id, file_path):
+    with open(file_path, "rb") as f:
+        requests.post(f"{TELEGRAM_API_URL}/sendDocument",
+                      data={"chat_id": chat_id},
+                      files={"document": f})
+
+
+# ================= FEATURES ================= #
+
+def check_low_stock():
+    stock = get_stock()
+    low = [f"{k} - {v:.0f} MTR" for k, v in stock.items() if v <= LOW_STOCK_LIMIT]
+
+    if low:
+        msg = "⚠️ LOW STOCK ALERT:\n\n" + "\n".join(low)
+        for chat in ALLOWED_CHATS:
+            send_message(chat, msg)
+
+
+def export_excel():
+    stock = get_stock()
+    df = pd.DataFrame(list(stock.items()), columns=["Item", "Meters"])
+    file = "stock.xlsx"
+    df.to_excel(file, index=False)
+    return file
+
+
+def format_stock():
+    s = get_stock()
+    return f"""Sudhakar HDPE :
+
+PE 100 :
+
+1.0 inch 8 KG - {s.get('1.0 inch 8 KG', 0):.0f} MTR
+1.0 inch 10 KG - {s.get('1.0 inch 10 KG', 0):.0f} MTR
+1.0 inch 12.5 KG - {s.get('1.0 inch 12.5 KG', 0):.0f} MTR
+
+PE 63 :
+
+1.25 inch 8 KG - {s.get('1.25 inch 8 KG', 0):.0f} MTR
+
+TUKDE :
+
+1.0 inch PE 100 8 KG - {s.get('1.0 inch PE 100 8KG', 0):.0f} MTR"""
+
+
+# ================= TELEGRAM WEBHOOK ================= #
+@app.route("/telegram", methods=["POST"])
+def telegram():
     data = request.get_json()
 
     if not data or "message" not in data:
         return "OK"
 
     chat_id = data["message"]["chat"]["id"]
-
     if chat_id not in ALLOWED_CHATS:
         return "OK"
 
     text = data["message"].get("text", "").lower()
 
-    # FLEXIBLE PATTERN (works better)
-    pattern = r'(\d+(?:\.\d+)?)\s*(?:m|meter|metre).*?(\d+(?:\.\d+)?)\s*(?:kg)'
-    match = re.search(pattern, text)
+    # -------- ADD STOCK -------- #
+    add = re.search(r'add\s+(.+?)\s+(\d+)', text)
+    if add:
+        item = add.group(1).title()
+        qty = float(add.group(2))
 
+        new_qty = update_stock(item, qty)
+        check_low_stock()
+
+        send_message(chat_id, f"✅ Added {qty} MTR\n{item}\nNew: {new_qty:.0f}")
+        return "OK"
+
+    # -------- DEDUCT STOCK -------- #
+    match = re.search(r'(\d+)\s*(?:m|meter).*?(\d+(?:\.\d+)?)\s*kg', text)
     if match:
         meters = float(match.group(1))
         kg = match.group(2)
 
-        # Mapping
         item_map = {
             "8": "1.0 inch 8 KG",
             "10": "1.0 inch 10 KG",
-            "12.5": "1.0 inch 12.5 KG",
+            "12.5": "1.0 inch 12.5 KG"
         }
 
-        item_code = item_map.get(kg, "1.0 inch 8 KG")
+        item = item_map.get(kg, "1.0 inch 8 KG")
+        deduct_stock(item, meters)
+        check_low_stock()
 
-        deduct_stock(item_code, meters)
+        send_message(chat_id, format_stock())
+        return "OK"
 
-        stock = get_stock()
+    # -------- STOCK VIEW -------- #
+    if "/stock" in text:
+        send_message(chat_id, format_stock())
 
-        response = f"""Sudhakar HDPE :
-
-PE 100 :
-
-1.0 inch 8 KG - {stock.get('1.0 inch 8 KG', 0):.0f} MTR
-1.0 inch 10 KG - {stock.get('1.0 inch 10 KG', 0):.0f} MTR
-1.0 inch 12.5 KG - {stock.get('1.0 inch 12.5 KG', 0):.0f} MTR
-
-PE 63 :
-
-1.25 inch 8 KG - {stock.get('1.25 inch 8 KG', 0):.0f} MTR
-
-TUKDE :
-
-1.0 inch PE 100 8 KG - {stock.get('1.0 inch PE 100 8KG', 0):.0f} MTR"""
-
-        send_message(chat_id, response)
-
-    elif "/stock" in text:
-        stock = get_stock()
-
-        response = f"""Sudhakar HDPE :
-
-PE 100 :
-
-1.0 inch 8 KG - {stock.get('1.0 inch 8 KG', 0):.0f} MTR
-1.0 inch 10 KG - {stock.get('1.0 inch 10 KG', 0):.0f} MTR
-1.0 inch 12.5 KG - {stock.get('1.0 inch 12.5 KG', 0):.0f} MTR
-
-PE 63 :
-
-1.25 inch 8 KG - {stock.get('1.25 inch 8 KG', 0):.0f} MTR
-
-TUKDE :
-
-1.0 inch PE 100 8 KG - {stock.get('1.0 inch PE 100 8KG', 0):.0f} MTR"""
-
-        send_message(chat_id, response)
+    # -------- EXCEL -------- #
+    if "/excel" in text:
+        file = export_excel()
+        send_file(chat_id, file)
 
     return "OK"
 
 
-# ---------------- MAIN ---------------- #
+# ================= ADMIN PANEL ================= #
+@app.route("/")
+def panel():
+    password = request.args.get("pass")
+
+    if password != "1234":
+        return "❌ Unauthorized"
+
+    stock = get_stock()
+
+    html = """
+    <h2>📦 Stock Dashboard</h2>
+    <table border="1" cellpadding="10">
+        <tr><th>Item</th><th>MTR</th></tr>
+        {% for k,v in stock.items() %}
+        <tr><td>{{k}}</td><td>{{v}}</td></tr>
+        {% endfor %}
+    </table>
+    """
+
+    return render_template_string(html, stock=stock)
+
+
+# ================= MAIN ================= #
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=5000)
