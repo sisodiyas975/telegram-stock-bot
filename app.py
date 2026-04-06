@@ -6,7 +6,6 @@ import os
 
 app = Flask(__name__)
 
-# YOUR BOT CONFIG
 TELEGRAM_TOKEN = "8773521279:AAHHDihdyGKG9Lcn0x2Oxr31zxQqgfiHlAI"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ALLOWED_CHATS = [6929050061, 8773521279]
@@ -14,74 +13,121 @@ ALLOWED_CHATS = [6929050061, 8773521279]
 def init_db():
     conn = sqlite3.connect('stock.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS stock 
-                 (item_name TEXT PRIMARY KEY, quantity REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS hdpe_stock 
+                 (item_code TEXT PRIMARY KEY, meters REAL)''')
     conn.commit()
     conn.close()
 
-INITIAL_STOCK = {
-    "pn 100 8 kg": 1000.0,
-    "pn 50 5 kg": 500.0,
+# YOUR ACTUAL STOCK - UPDATE THESE NUMBERS
+HDPE_STOCK = {
+    "1.0 inch 8 KG": 1285,
+    "1.0 inch 10 KG": 666,
+    "1.0 inch 12.5 KG": 863,
+    "1.25 inch 8 KG": 274,
+    "1.0 inch PE 100 8KG": 87 + 93,  # Combined TUKDE
 }
 
-def send_telegram_message(chat_id, text):
-    url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
-    requests.post(url, data=payload)
-
-def update_stock(item_name, quantity):
+def get_stock():
     conn = sqlite3.connect('stock.db')
     c = conn.cursor()
-    c.execute("SELECT quantity FROM stock WHERE item_name=?", (item_name,))
-    result = c.fetchone()
-    if result:
-        new_stock = max(0, result[0] - quantity)
-        c.execute("UPDATE stock SET quantity=? WHERE item_name=?", (new_stock, item_name))
+    c.execute("SELECT item_code, meters FROM hdpe_stock")
+    stock = dict(c.fetchall())
+    conn.close()
+    return stock
+
+def deduct_stock(item_code, meters):
+    stock = get_stock()
+    if item_code in stock:
+        new_stock = max(0, stock[item_code] - meters)
+        conn = sqlite3.connect('stock.db')
+        c = conn.cursor()
+        c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_stock, item_code))
         conn.commit()
         conn.close()
         return new_stock
-    conn.close()
     return None
 
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    requests.post(url, data={'chat_id': chat_id, 'text': text})
+
 @app.route("/telegram", methods=['POST'])
-def telegram_webhook():
+def webhook():
     data = request.get_json()
     if not data or 'message' not in data: return "OK"
     
-    message = data['message']
-    chat_id = message['chat']['id']
-    
+    chat_id = data['message']['chat']['id']
     if chat_id not in ALLOWED_CHATS: return "OK"
     
-    text = message.get('text', '').lower().strip()
+    text = data['message'].get('text', '').lower()
     
-    pattern = r'(\d+(?:\.\d+)?)\s*meter\s*(pn\s*\d+\s*\d+\s*kg)'
+    # Parse: "93 metre 8 kg PN 100" OR "93 meter pn 100 8 kg"
+    pattern = r'(\d+(?:\.\d+)?)\s*(?:meter|metre)\s*(?:pn\s*)?(\d+)\s*(?:kg|kgs?)'
     match = re.search(pattern, text)
     
     if match:
         meters = float(match.group(1))
-        item = match.group(2).strip()
-        remaining = update_stock(item, meters) or INITIAL_STOCK.get(item, 0) - meters
+        pn_size = match.group(2)
         
-        response = f"✅ <b>ORDER OK</b>\n📏 <b>{meters}m</b> <code>{item}</code>\n📦 <b>{remaining:.1f}m</b> LEFT"
-        send_telegram_message(chat_id, response)
-    elif text == "/stock":
-        conn = sqlite3.connect('stock.db')
-        c = conn.cursor()
-        c.execute("SELECT item_name, quantity FROM stock")
-        stocks = c.fetchall()
-        conn.close()
-        msg = "📊 <b>STOCK:</b>\n" + "\n".join([f"• <code>{i}</code> <b>{q:.1f}m</b>" for i,q in stocks])
-        send_telegram_message(chat_id, msg or "📭 Empty")
-    else:
-        send_telegram_message(chat_id, "📋 Send: <code>93 meter pn 100 8 kg</code>")
+        # Map to item codes
+        item_map = {
+            "100": "1.0 inch 8 KG",
+            "63": "1.25 inch 8 KG",
+            "125": "1.0 inch 12.5 KG"
+        }
+        
+        item_code = item_map.get(pn_size, "1.0 inch 8 KG")
+        remaining = deduct_stock(item_code, meters) or HDPE_STOCK.get(item_code, 0) - meters
+        
+        # EXACT FORMAT YOU WANTED
+        response = f"""Sudhakar HDPE : 
+
+PE 100 : 
+
+1.0 inch 8 KG - {get_stock().get('1.0 inch 8 KG', 0):.0f} MTR
+1.0 inch 10 KG - {get_stock().get('1.0 inch 10 KG', 0):.0f} MTR
+1.0 inch 12.5 KG - {get_stock().get('1.0 inch 12.5 KG', 0):.0f} MTR
+
+PE 63 : 
+
+1.25 inch 8 KG - {get_stock().get('1.25 inch 8 KG', 0):.0f} MTR  (Approx)
+
+TUKDE 
+
+1.0 inch PE 100 8 KG - {get_stock().get('1.0 inch PE 100 8KG', 0):.0f}  MTR"""
+        
+        send_message(chat_id, response)
+        
+    elif "/stock" in text:
+        stock = get_stock()
+        response = f"""Sudhakar HDPE : 
+
+PE 100 : 
+
+1.0 inch 8 KG - {stock.get('1.0 inch 8 KG', 0):.0f} MTR
+1.0 inch 10 KG - {stock.get('1.0 inch 10 KG', 0):.0f} MTR
+1.0 inch 12.5 KG - {stock.get('1.0 inch 12.5 KG', 0):.0f} MTR
+
+PE 63 : 
+
+1.25 inch 8 KG - {stock.get('1.25 inch 8 KG', 0):.0f} MTR  (Approx)
+
+TUKDE 
+
+1.0 inch PE 100 8 KG - {stock.get('1.0 inch PE 100 8KG', 0):.0f}  MTR"""
+        send_message(chat_id, response)
     
     return "OK"
 
 if __name__ == '__main__':
     init_db()
+    # Initialize stock
+    stock_db = get_stock()
+    for item, qty in HDPE_STOCK.items():
+        if item not in stock_db:
+            conn = sqlite3.connect('stock.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO hdpe_stock VALUES (?, ?)", (item, qty))
+            conn.commit()
+            conn.close()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
