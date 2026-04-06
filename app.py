@@ -7,8 +7,8 @@ import os
 app = Flask(__name__)
 
 # ================= CONFIG ================= #
-TELEGRAM_TOKEN = os.environ.get("8773521279:AAE4ogE89y7Tiq1JpSmbJEiXlmZwVjDgczI")  # 🔐 safer
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{8773521279:AAE4ogE89y7Tiq1JpSmbJEiXlmZwVjDgczI}"
+TELEGRAM_TOKEN = "8773521279:AAE4ogE89y7Tiq1JpSmbJEiXlmZwVjDgczI"
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 ALLOWED_CHATS = [6929050061]  # keep only your chat id
 DB_NAME = "stock.db"
