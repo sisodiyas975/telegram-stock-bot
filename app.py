@@ -2,7 +2,6 @@ from flask import Flask, request, render_template_string
 import sqlite3
 import requests
 import re
-import os
 
 app = Flask(__name__)
 
@@ -10,7 +9,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8773521279:AAE4ogE89y7Tiq1JpSmbJEiXlmZwVjDgczI"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-ALLOWED_CHATS = [6929050061]  # keep only your chat id
+ALLOWED_CHATS = [6929050061]   # ⚠️ make sure this is correct
 DB_NAME = "stock.db"
 LOW_STOCK_LIMIT = 100
 
@@ -56,7 +55,7 @@ def update_stock(item, qty):
 
     if row:
         new_qty = row[0] + qty
-        c.execute("UPDATE hdpe_stock SET meters=?", (new_qty,))
+        c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_qty, item))
     else:
         new_qty = qty
         c.execute("INSERT INTO hdpe_stock VALUES (?, ?)", (item, qty))
@@ -90,7 +89,7 @@ def send_message(chat_id, text):
         "chat_id": chat_id,
         "text": text
     })
-    print("Telegram response:", res.text)  # DEBUG
+    print("Telegram response:", res.text)
 
 
 # ================= FEATURES ================= #
@@ -135,9 +134,15 @@ def telegram():
     chat_id = data["message"]["chat"]["id"]
 
     if chat_id not in ALLOWED_CHATS:
+        print("Unauthorized chat:", chat_id)
         return "OK"
 
     text = data["message"].get("text", "").lower()
+
+    # -------- TEST MESSAGE -------- #
+    if text == "hi":
+        send_message(chat_id, "Bot working ✅")
+        return "OK"
 
     # -------- ADD STOCK -------- #
     add = re.search(r'add\s+(.+?)\s+(\d+)', text)
@@ -170,6 +175,7 @@ def telegram():
         send_message(chat_id, format_stock())
         return "OK"
 
+    # -------- STOCK VIEW -------- #
     if "/stock" in text:
         send_message(chat_id, format_stock())
 
@@ -217,12 +223,6 @@ def panel():
     """
 
     return render_template_string(html, stock=stock)
-
-
-# ================= HEALTH CHECK ================= #
-@app.route("/health")
-def health():
-    return "OK"
 
 
 # ================= MAIN ================= #
