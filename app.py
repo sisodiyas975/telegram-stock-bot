@@ -3,7 +3,6 @@ import sqlite3
 import requests
 import os
 import re
-import pandas as pd
 
 app = Flask(__name__)
 
@@ -92,15 +91,7 @@ def send_message(chat_id, text):
     })
 
 
-def send_file(chat_id, file_path):
-    with open(file_path, "rb") as f:
-        requests.post(f"{TELEGRAM_API_URL}/sendDocument",
-                      data={"chat_id": chat_id},
-                      files={"document": f})
-
-
 # ================= FEATURES ================= #
-
 def check_low_stock():
     stock = get_stock()
     low = [f"{k} - {v:.0f} MTR" for k, v in stock.items() if v <= LOW_STOCK_LIMIT]
@@ -109,14 +100,6 @@ def check_low_stock():
         msg = "⚠️ LOW STOCK ALERT:\n\n" + "\n".join(low)
         for chat in ALLOWED_CHATS:
             send_message(chat, msg)
-
-
-def export_excel():
-    stock = get_stock()
-    df = pd.DataFrame(list(stock.items()), columns=["Item", "Meters"])
-    file = "stock.xlsx"
-    df.to_excel(file, index=False)
-    return file
 
 
 def format_stock():
@@ -186,11 +169,6 @@ def telegram():
     # -------- STOCK VIEW -------- #
     if "/stock" in text:
         send_message(chat_id, format_stock())
-
-    # -------- EXCEL -------- #
-    if "/excel" in text:
-        file = export_excel()
-        send_file(chat_id, file)
 
     return "OK"
 
