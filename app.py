@@ -1,19 +1,20 @@
 from flask import Flask, request, render_template_string
 import sqlite3
 import requests
-import os
 import re
+import os
 
 app = Flask(__name__)
 
 # ================= CONFIG ================= #
-TELEGRAM_TOKEN = "8773521279:AAHHDihdyGKG9Lcn0x2Oxr31zxQqgfiHlAI"
+TELEGRAM_TOKEN = os.environ.get("8773521279:AAE4ogE89y7Tiq1JpSmbJEiXlmZwVjDgczI")  # 🔐 safer
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-ALLOWED_CHATS = [6929050061, 8773521279]   # your chat id
+
+ALLOWED_CHATS = [6929050061]  # keep only your chat id
 DB_NAME = "stock.db"
 LOW_STOCK_LIMIT = 100
 
-# DEFAULT STOCK
+# ================= DEFAULT STOCK ================= #
 DEFAULT_STOCK = {
     "1.0 inch 8 KG": 1285,
     "1.0 inch 10 KG": 666,
@@ -55,7 +56,7 @@ def update_stock(item, qty):
 
     if row:
         new_qty = row[0] + qty
-        c.execute("UPDATE hdpe_stock SET meters=? WHERE item_code=?", (new_qty, item))
+        c.execute("UPDATE hdpe_stock SET meters=?", (new_qty,))
     else:
         new_qty = qty
         c.execute("INSERT INTO hdpe_stock VALUES (?, ?)", (item, qty))
@@ -85,10 +86,11 @@ def deduct_stock(item, qty):
 
 # ================= TELEGRAM ================= #
 def send_message(chat_id, text):
-    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+    res = requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
     })
+    print("Telegram response:", res.text)  # DEBUG
 
 
 # ================= FEATURES ================= #
@@ -125,11 +127,13 @@ TUKDE :
 @app.route("/telegram", methods=["POST"])
 def telegram():
     data = request.get_json()
+    print("Incoming:", data)  # DEBUG
 
     if not data or "message" not in data:
         return "OK"
 
     chat_id = data["message"]["chat"]["id"]
+
     if chat_id not in ALLOWED_CHATS:
         return "OK"
 
@@ -166,14 +170,13 @@ def telegram():
         send_message(chat_id, format_stock())
         return "OK"
 
-    # -------- STOCK VIEW -------- #
     if "/stock" in text:
         send_message(chat_id, format_stock())
 
     return "OK"
 
 
-# ================= ADMIN PANEL ================= #
+# ================= MOBILE UI ================= #
 @app.route("/")
 def panel():
     password = request.args.get("pass")
@@ -184,16 +187,42 @@ def panel():
     stock = get_stock()
 
     html = """
-    <h2>📦 Stock Dashboard</h2>
-    <table border="1" cellpadding="10">
-        <tr><th>Item</th><th>MTR</th></tr>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {font-family: Arial; background:#f2f2f2; padding:10px;}
+            .card {
+                background:white;
+                padding:15px;
+                margin:10px 0;
+                border-radius:10px;
+                box-shadow:0 2px 5px rgba(0,0,0,0.1);
+            }
+            .title {font-weight:bold;}
+            .qty {font-size:20px; color:green;}
+        </style>
+    </head>
+    <body>
+        <h2>📦 Stock Dashboard</h2>
         {% for k,v in stock.items() %}
-        <tr><td>{{k}}</td><td>{{v}}</td></tr>
+        <div class="card">
+            <div class="title">{{k}}</div>
+            <div class="qty">{{v}} MTR</div>
+        </div>
         {% endfor %}
-    </table>
+    </body>
+    </html>
     """
 
     return render_template_string(html, stock=stock)
+
+
+# ================= HEALTH CHECK ================= #
+@app.route("/health")
+def health():
+    return "OK"
 
 
 # ================= MAIN ================= #
